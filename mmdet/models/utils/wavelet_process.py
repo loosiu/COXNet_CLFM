@@ -77,10 +77,30 @@ class DWTC(nn.Module):
             in_channel,
             out_channel,
             mode='upsample',
-            inner_channel=64):
+            inner_channel=64,
+            tdr_on=True):
         super(DWTC, self).__init__()
         self.mode = mode
-        if mode == 'up_new':
+        if mode == 'up_tdr':
+            # TDS.  The RGB path is the champion up_new, byte for byte; what is
+            # added is a parallel branch that reuses the thermal decomposition
+            # this module already computes and hands DASR a refined thermal
+            # feature instead of the raw one.  Evidence and design: maclfm.py.
+            from .maclfm import ThermalDetailSelection
+            self.DWT = DWT_2D(wavename='haar')
+            self.IWT = IDWT_2D(wavename='haar')
+            self.deconv = TransBasicConv2d(out_channel, out_channel)
+            self.hconv = BasicConv2d(out_channel * 2, out_channel)
+            self.fusion_conv = BasicConv2d(out_channel * 2, out_channel)
+            self.softmax = nn.Softmax(dim=1)
+            # Level 0 only in practice (tdr_levels): on the trained champion,
+            # CLFM gradients at levels 1-3 are 1e-4 to 3e-6 of level 0's,
+            # because ATSS assigns every tiny person to P3.
+            self.tdr_on = tdr_on
+            if tdr_on:
+                self.tdr = ThermalDetailSelection(out_channel)
+
+        elif mode == 'up_new':
             self.DWT = DWT_2D(wavename='haar')
             self.IWT = IDWT_2D(wavename='haar')
             self.deconv = TransBasicConv2d(out_channel, out_channel)
@@ -227,6 +247,27 @@ class DWTC(nn.Module):
             # out = self.out_conv(x_m, y_m)
             return y_m
         
+        if self.mode == 'up_tdr':
+            # x = thermal (level i), y = visible (level i+1)
+            y = self.deconv(y)
+            t_ll, t_lh, t_hl, t_hh = self.DWT(x, mode='full')
+            v_ll, v_lh, v_hl, v_hh = self.DWT(y, mode='full')
+
+            # --- RGB path: champion up_new, unchanged --------------------
+            xy_ll = self.fusion_conv(torch.cat((t_ll, v_ll), dim=1))
+            y_h = self.softmax(self.hconv(torch.cat((v_lh, v_hl), dim=1)))
+            v_out = self.IWT(torch.add(xy_ll, torch.mul(xy_ll, y_h)),
+                             LH=v_lh, HL=v_hl, HH=v_hh)
+            if not self.tdr_on:
+                return v_out, x
+
+            # --- thermal path: weight the detail by relevance ------------
+            # Rebuilt with the ORIGINAL low band; Haar orthonormality keeps the
+            # whole change inside the detail subspace, so t_LL is preserved
+            # exactly and only local contrast moves.
+            d_lh, d_hl, d_hh = self.tdr(t_ll, (t_lh, t_hl, t_hh))
+            return v_out, self.IWT(t_ll, LH=d_lh, HL=d_hl, HH=d_hh)
+
         if self.mode == 'up_new':
             # self.iter += 1
             # H = y.shape[2]

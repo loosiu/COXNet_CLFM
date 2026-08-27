@@ -5,7 +5,7 @@ import os
 import os.path as osp
 import time
 import warnings
-os.environ['CUDA_VISIBLE_DEVICES'] = '5'
+os.environ.setdefault('CUDA_VISIBLE_DEVICES', '0')
 import mmcv
 import torch
 # torch.backends.cuda.matmul.allow_tf32 = False

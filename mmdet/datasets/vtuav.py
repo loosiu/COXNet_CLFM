@@ -22,9 +22,9 @@ from .custom import CustomDataset
 @DATASETS.register_module()
 class VTUAVdet(CustomDataset):
 
-    CLASSES = ('person', 'rider', 'crowd')
+    CLASSES = ('person',)
 
-    PALETTE = [(220, 20, 60), (119, 11, 32), (119, 11, 32)]
+    PALETTE = [(220, 20, 60)]
 
     def load_annotations(self, ann_file):
         """Load annotation from COCO style annotation file.

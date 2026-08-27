@@ -1,9 +1,9 @@
 # dataset settings
-dataset_type = 'VTUAVdet'
-data_root = '/data/siwoo/COXNet-release/data/VTUAV_v1.0-001/'
+dataset_type = 'NIICU'
+data_root = '/data/siwoo/COXNet-release/data/NII-CU/coxnet/'
 img_norm_cfg = dict(
-    mean_list=([83.20, 92.24, 97.70], [134.84, 134.84, 134.84]),
-    std_list=([57.77, 57.41, 57.69], [81.58, 81.58, 81.58]), to_rgb=True)
+    mean_list=([99.52, 85.98, 76.42], [79.52, 79.52, 79.52]),
+    std_list=([38.18, 33.54, 29.74], [57.04, 57.04, 57.04]), to_rgb=True)
 train_pipeline = [
     dict(type='LoadYOLOImagePairFromFile', spectrals=('visible', 'infrared')),
     dict(type='LoadAnnotations', with_bbox=True),
@@ -34,17 +34,17 @@ data = dict(
     workers_per_gpu=8,
     train=dict(
         type=dataset_type,
-        ann_file=data_root + 'train_ir.json',
+        ann_file=data_root + 'train_thermal.json',
         img_prefix=data_root + 'train',
         pipeline=train_pipeline),
     val=dict(
         type=dataset_type,
-        ann_file=data_root + 'val_ir.json',
+        ann_file=data_root + 'val_thermal.json',
         img_prefix=data_root + 'val',
         pipeline=test_pipeline),
     test=dict(
         type=dataset_type,
-        ann_file=data_root + 'val_ir.json',
+        ann_file=data_root + 'val_thermal.json',
         img_prefix=data_root + 'val',
         pipeline=test_pipeline))
 evaluation = dict(interval=1, metric='bbox')

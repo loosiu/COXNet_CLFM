@@ -1,6 +1,7 @@
 # dataset settings
 dataset_type = 'DronePerson'
-data_root = '/mnt/nfs_200T/optics/data/dataset_ppr/Public/RGBTDronePerson-yolo/'
+# data_root = '/mnt/nfs_200T/optics/data/dataset_ppr/Public/RGBTDronePerson-yolo/'
+data_root = '/data/siwoo/COXNet-release/data/RGBTDronePerson/'
 img_norm_cfg = dict(
     mean_list=([115.37, 121.82, 122.63], [93.10, 93.10, 93.10]),
     std_list=([85.13, 89.01, 88.27], [50.24, 50.24, 50.24]), to_rgb=True)

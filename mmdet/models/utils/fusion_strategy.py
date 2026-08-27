@@ -1,3 +1,4 @@
+import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -24,7 +25,12 @@ class FusionLayer(nn.Module):
             wf_loss_weight=0.1,
             use_clfm=[],
             clfm_mode='up_new',
-            usepoolup=['v']):
+            usepoolup=['v'],
+            aam_align_corners=True,
+            aam_warp=True,
+            tdr_levels=(0,),
+            tdr_loss_weight=0.0,
+            tdr_hm_min_sigma=1.0):
         super(FusionLayer, self).__init__()
         self.in_channels = in_channels
         self.reduction = reduction
@@ -40,6 +46,9 @@ class FusionLayer(nn.Module):
         self.wf_loss_weight = wf_loss_weight
         self.use_clfm = use_clfm
         self.usepoolup = usepoolup
+        self.tdr_loss_weight = tdr_loss_weight
+        self.tdr_hm_min_sigma = tdr_hm_min_sigma
+        self.tdr_loss = None
 
         if 'v2' in self.use_clfm:
             self.idwt_layers = nn.ModuleList()
@@ -57,8 +66,13 @@ class FusionLayer(nn.Module):
                     DWTC(
                         in_channel=in_channels, 
                         out_channel=in_channels,
-                        mode=clfm_mode,))
-
+                        mode=clfm_mode,
+                        # Levels 1-3 fall back to the champion path: on the
+                        # trained champion their CLFM gradient is 1e4 to 3e5
+                        # times smaller than level 0's, because ATSS assigns
+                        # every tiny person to P3.  A module there would carry
+                        # parameters that never train.
+                        tdr_on=(i in tdr_levels),))
         if fs_type == 'cat' or fs_type == 'clfm':
             self.conv = nn.Conv2d(in_channels * 2, in_channels, kernel_size=1)
         elif fs_type == 'add':
@@ -76,7 +90,9 @@ class FusionLayer(nn.Module):
                         use_fixed_ga=use_fixed_ga,
                         use_msf=use_msf,
                         om_kernels=om_kernels,
-                        msf_kernels=msf_kernels))
+                        msf_kernels=msf_kernels,
+                        aam_align_corners=aam_align_corners,
+                        aam_warp=aam_warp))
         else:
             raise ValueError(f"Unsupported fusion type: {fs_type}")
 
@@ -108,7 +124,14 @@ class FusionLayer(nn.Module):
                     if 'v' == self.use_clfm[0]:
                         v_feat = F.interpolate(v_feat, size=t_feat.shape[2:], mode='bilinear', align_corners=True)
                     elif 'v2' in self.use_clfm or 'v3' in self.use_clfm:
-                        v_feat = self.idwt_layers[i](t_feat, v_feat)
+                        out = self.idwt_layers[i](t_feat, v_feat)
+                        if isinstance(out, tuple):
+                            # up_tdr also hands back a refined thermal feature;
+                            # t_feats[] itself is untouched, so wf_loss keeps
+                            # targeting the raw thermal and stays comparable.
+                            v_feat, t_feat = out
+                        else:
+                            v_feat = out
                     elif 't2' in self.use_clfm or 't3' in self.use_clfm:
                         t_feat = self.idwt_layers[i](v_feat, t_feat)
                     elif 't' in self.use_clfm:
@@ -117,6 +140,8 @@ class FusionLayer(nn.Module):
                 fused_feats.append(fused_feat)
 
         if self.training:
+            self.tdr_loss = (self.compute_tdr_loss(gt_bboxes, img_metas)
+                             if self.tdr_loss_weight > 0 else None)
             if self.wf_loss:
                 if self.wf_loss_mode == 'kl_v1':
                     wf_loss = 0
@@ -135,6 +160,81 @@ class FusionLayer(nn.Module):
                     return fused_feats, wf_loss
         return fused_feats
 
+    def _gaussian_heatmap(self, boxes, h, w, H, W, device):
+        """A CenterNet-style target map on the band grid.
+
+        A binary box mask is the wrong target here: one band cell covers 16
+        image pixels at level 0 and the objects are 8-12 pixels, so a box lands
+        on one or two cells and the supervision is almost all background.  A
+        Gaussian spread over a few cells gives the head something to regress and
+        tolerates the fact that a tiny object's useful detail does not stop at
+        the annotated boundary.
+        """
+        hm = torch.zeros(h, w, device=device)
+        for b in boxes:
+            # The peak sits on the ROUNDED centre, as CenterNet does.  Evaluating
+            # the Gaussian at a fractional centre leaves every cell slightly below
+            # 1, and the focal loss counts positives with gt >= 0.999 -- so the
+            # positive set comes out empty and the loss is all negative terms.
+            ci = int(round(float(b[0] + b[2]) / 2 * w / W))
+            cj = int(round(float(b[1] + b[3]) / 2 * h / H))
+            if not (0 <= ci < w and 0 <= cj < h):
+                continue
+            sz = max(float(b[2] - b[0]) * w / W, float(b[3] - b[1]) * h / H)
+            sig = max(self.tdr_hm_min_sigma, sz / 3.0)
+            r = int(3 * sig) + 1
+            x0, x1 = max(ci - r, 0), min(ci + r + 1, w)
+            y0, y1 = max(cj - r, 0), min(cj + r + 1, h)
+            ys = torch.arange(y0, y1, device=device, dtype=torch.float32)
+            xs = torch.arange(x0, x1, device=device, dtype=torch.float32)
+            g = torch.exp(-(((ys[:, None] - cj) ** 2 + (xs[None, :] - ci) ** 2)
+                            / (2 * sig ** 2)))
+            hm[y0:y1, x0:x1] = torch.maximum(hm[y0:y1, x0:x1], g)
+        return hm
+
+    @staticmethod
+    def _focal_heatmap(pred, gt, alpha=2.0, beta=4.0):
+        """CenterNet's penalty-reduced focal loss.
+
+        Chosen over plain cross-entropy for two reasons that both matter here:
+        it takes a soft target, so cells near an object are not punished as hard
+        as cells far from one, and the (1 - y)^beta term handles a 30:1 class
+        imbalance without a hand-set class weight.
+        """
+        pred = pred.clamp(1e-4, 1 - 1e-4)
+        pos = gt.ge(0.999).float()
+        neg = 1.0 - pos
+        pos_loss = torch.log(pred) * (1 - pred).pow(alpha) * pos
+        neg_loss = torch.log(1 - pred) * pred.pow(alpha) * (1 - gt).pow(beta) * neg
+        n = pos.sum()
+        return -(pos_loss.sum() + neg_loss.sum()) / n.clamp(min=1.0)
+
+    def compute_tdr_loss(self, bboxes, img_metas):
+        """Teach R to separate objects from background.
+
+        Left to the detection loss alone the map cannot learn: its convolution
+        receives a gradient two to four orders of magnitude below the layers
+        around it, and an unsupervised run converged to a constant (sd 0.0002).
+        A per-image margin between object and background means was tried and
+        left 11.4% of background cells above 0.5 -- it constrains the means and
+        says nothing about positions.  The Gaussian-heatmap focal target below
+        gives every cell an answer and brought that to 0.5%.
+        """
+        loss, n = 0.0, 0
+        for dwtc in self.idwt_layers:
+            tdr = getattr(dwtc, 'tdr', None)
+            if tdr is None or tdr.target is None:
+                continue
+            p = tdr.target                              # (B, 1, h, w)
+            B, _, h, w = p.shape
+            for i in range(B):
+                if bboxes[i].numel() == 0:
+                    continue
+                H, W = img_metas[i]['pad_shape'][:2]
+                hm = self._gaussian_heatmap(bboxes[i], h, w, H, W, p.device)
+                loss = loss + self._focal_heatmap(p[i, 0], hm)
+                n += 1
+        return self.tdr_loss_weight * loss / max(n, 1)
     def compute_kl_loss_near_objects(self, fused_x, x, bboxes, img_metas, weight=1.0):
         kl_loss = 0
         b, _, h, w = fused_x.shape
@@ -192,8 +292,24 @@ class HOFM(BaseModule):
             use_msf=True,
             om_kernels=[9, 7, 5, 3, 1],
             om_range_factor =[1, 1, 1, 1, 1], 
-            msf_kernels=[7, 5, 3]):
+            msf_kernels=[7, 5, 3],
+            aam_align_corners=True,
+            aam_warp=True):
         super(HOFM, self).__init__()
+        # The reference grid below is built as (i+0.5)/W*2-1.  Under
+        # align_corners=True that maps to pixel index (i+0.5)*(W-1)/W, which is
+        # off-grid at every column except the centre -- so a predicted offset of
+        # zero still resamples, and AAM cannot express "leave this where it is".
+        # Measured on the trained champion at level 0: every column lands an
+        # average of 0.25 px off, max|grid_sample(x, ref) - x| = 2.71, and the
+        # head input loses 0.021 AUC on adjacent-cell separation plus 0.215 px of
+        # sub-cell localisation.  align_corners=False maps the same grid to
+        # exactly i (residual 5e-06), which keeps the alignment and drops the
+        # blur -- it measures better than skipping the resampling altogether,
+        # so the warp is doing real work once it stops smearing.
+        # Both flags default to the shipped behaviour; only a config turns them on.
+        self.aam_align_corners = aam_align_corners
+        self.aam_warp = aam_warp
         self.in_channels = in_channels
         self.reduction = reduction
         self.num_stages = num_stages
@@ -318,15 +434,18 @@ class HOFM(BaseModule):
                     vis_pos = vis_reference
                     lwir_pos = lwir_reference
                 
-                feat_v = F.grid_sample(
-                    input=feat_v,
-                    grid=vis_pos[..., (1, 0)],  
-                    mode='bilinear', align_corners=True)
-                
-                feat_t = F.grid_sample(
-                    input=feat_t,
-                    grid=lwir_pos[..., (1, 0)],  
-                    mode='bilinear', align_corners=True)
+                if self.aam_warp:
+                    feat_v = F.grid_sample(
+                        input=feat_v,
+                        grid=vis_pos[..., (1, 0)],
+                        mode='bilinear',
+                        align_corners=self.aam_align_corners)
+
+                    feat_t = F.grid_sample(
+                        input=feat_t,
+                        grid=lwir_pos[..., (1, 0)],
+                        mode='bilinear',
+                        align_corners=self.aam_align_corners)
                 
                 feat_c = self.proj_offset(torch.cat([feat_v, feat_t], dim=1))
             

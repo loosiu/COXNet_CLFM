@@ -33,6 +33,11 @@ class FusionNetXO(SingleStageDetector):
                  wf_loss_weight=0.1,
                  use_clfm=[],
                  clfm_mode='up_new',
+                 aam_align_corners=True,
+                 aam_warp=True,
+                 tdr_levels=(0,),
+                 tdr_loss_weight=0.0,
+                 tdr_hm_min_sigma=1.0,
                 #  usepoolup=['v'],
                  usepoolup=[],
                  train_cfg=None,
@@ -64,8 +69,12 @@ class FusionNetXO(SingleStageDetector):
             wf_loss_weight=wf_loss_weight,
             use_clfm=use_clfm,
             clfm_mode=clfm_mode,
-            usepoolup=usepoolup)
-        
+            usepoolup=usepoolup,
+            aam_align_corners=aam_align_corners,
+            aam_warp=aam_warp,
+            tdr_levels=tdr_levels,
+            tdr_loss_weight=tdr_loss_weight,
+            tdr_hm_min_sigma=tdr_hm_min_sigma)        
         # self.iter = -1
             
     def extract_feat(self, img, gt_bboxes=None, img_metas=None):
@@ -106,6 +115,8 @@ class FusionNetXO(SingleStageDetector):
 
         if self.wf_loss:
             losses.update(dict(wf_loss=wf_loss))
+        if getattr(self.fuse_layer, 'tdr_loss', None) is not None:
+            losses.update(dict(tdr_loss=self.fuse_layer.tdr_loss))
 
         return losses
 

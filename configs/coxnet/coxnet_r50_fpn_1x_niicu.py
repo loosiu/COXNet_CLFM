@@ -1,5 +1,5 @@
 _base_ = [
-    '../_base_/datasets/vtuav_detection.py',
+    '../_base_/datasets/niicu_detection.py',
     '../_base_/schedules/schedule_1x.py', '../_base_/default_runtime.py'
 ]
 model = dict(
@@ -79,6 +79,7 @@ model = dict(
         nms_pre=1000,
         min_bbox_size=0,
         score_thr=0.05,
+        # NMS IoU 0.5: NII-CU 원저(Speth et al. 2022, Sec 6.3.2) 테스트 설정
         nms=dict(type='nms', iou_threshold=0.5),
         max_per_img=100))
 
@@ -86,4 +87,4 @@ model = dict(
 optimizer = dict(type='SGD', lr=0.01, momentum=0.9, weight_decay=0.0001)
 optimizer_config = dict(grad_clip=dict(_delete_=True, max_norm=35, norm_type=2))
 
-work_dir = 'work_dir/coxnet/vtuav/coxnet_r50_fpn_1x_person'
+work_dir = 'work_dir/coxnet/niicu/coxnet_r50_fpn_1x'
