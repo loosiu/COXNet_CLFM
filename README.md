@@ -1,197 +1,125 @@
-# COXNet: Cross-Layer Fusion With Adaptive Alignment and Scale Integration for RGBT Tiny Object Detection
+# TDS: Thermal Detail Selection for RGB-T Tiny Person Detection
 
-**IEEE Transactions on Circuits and Systems for Video Technology**, Vol. 36, No. 1, January 2026
+This repository extends [COXNet](README_COXNet.md) (TCSVT 2026) with **TDS
+(Thermal Detail Selection)** — a refinement module for the thermal branch of
+the fusion stage.
 
-[![paper](https://img.shields.io/badge/IEEE%20TCSVT-2026-blue)](https://doi.org/10.1109/TCSVT.2025.3595147)
+## Motivation
 
-**Authors:** Peiran Peng, Tingfa Xu, Liqiang Song, Mengqi Zhu, Yuqiang Fang, Jianan Li
+COXNet's CLFM enhances only the **visible** feature in the wavelet domain: the
+thermal feature contributes its LL band as an ingredient and then reaches
+fusion untouched, while its detail bands (LH/HL/HH) are computed and discarded.
+Those discarded bands are the ones aligned with the objects:
 
----
+| band | object-vs-background AUC (level 0) |
+|---|---|
+| thermal LH / HL / HH (discarded) | 0.903 / 0.910 / 0.916 |
+| visible LH / HL (used) | 0.361 / 0.368 |
 
-## Introduction
+A ground-truth-gated oracle on the trained baseline shows the same detail is a
+tiny-object cue at object positions (+1.93 mAP50 when amplified there) and
+clutter over background (−1.99 when amplified there) — so the question is not
+*whether* to use thermal detail but *where*.
 
-COXNet is an RGBT tiny object detection framework that jointly addresses cross-modal fusion, misalignment, and scale variation in drone-based multi-spectral imagery. The core innovations are: **(1) CLFM** (Cross-Layer Fusion Module), which leverages wavelet decomposition to align and fuse complementary RGB and thermal features across pyramid levels; **(2) DASR** (Dynamic Adaptive Scale Refinement), which recalibrates spatial correspondences and integrates multi-scale contextual cues for robust tiny object localization; and **(3) a GeoShape-based label assignment strategy** that better fits the irregular geometry of tiny aerial targets, improving recall under severe scale imbalance.
+## Method
 
----
+TDS reuses the DWT that CLFM already computes and gives the thermal branch a
+symmetric, position-adaptive refinement:
 
-## Main Results
+```
+D  = f_d([LH, HL, HH])          one description of the detail response
+R  = sigmoid(f_g([LL, D]))      Detail Relevance Map: is the response object-related
+g_b = s_b (1 + k_b (R − R̄))     per-band, per-position weight (all learned)
+T′ = IDWT(LL, g·[LH, HL, HH])   LL untouched → structure and position preserved
+```
 
-### RGBTDronePerson
+- **R** is supervised by a Gaussian heatmap on the GT box centres with
+  CenterNet-style penalty-reduced focal loss. Supervision is required: the
+  detection loss reaches this gate with a gradient 100–1000× below the
+  neighbouring layers, and an unsupervised gate converges to a constant.
+- **LL guides**: destroying LL's spatial structure at inference collapses the
+  map (AUC 0.970 → 0.879) while destroying D barely moves it.
+- **Identity start**: `s = 1, k = 0` makes the module a no-op, so training
+  starts exactly at the baseline and the worst case is the baseline.
+- The RGB path of CLFM is unchanged, byte for byte.
 
-[[Dataset Link](https://nnnnerd.github.io/RGBTDronePerson/)]
+<p align="center"><img src="assets/fig_design_evidence.png" width="95%"></p>
 
-| Method | mAP25 | mAP50 (all) | mAP50 (tiny) | mAP50 (tiny1) | mAP50 (tiny2) | mAP50 (tiny3) | mAP50 (small) | FLOPs (G) | FPS |
-|--------|-------|-------------|--------------|---------------|---------------|---------------|---------------|-----------|-----|
-| Cascade R-CNN | 42.47 | 31.55 | 31.99 | 0.00 | 29.43 | 37.77 | 33.61 | 76.23 | 11.8 |
-| RetinaNet | 38.92 | 22.87 | 23.34 | 4.69 | 13.57 | 32.66 | 15.77 | 49.48 | 19.4 |
-| FCOS | 45.21 | 29.89 | 30.71 | 9.40 | 22.73 | 34.87 | 26.00 | 78.32 | 19.2 |
-| ATSS | 53.14 | 36.24 | 37.47 | 16.92 | 24.16 | 43.59 | 24.62 | 48.73 | 19.0 |
-| GFL | 56.91 | 39.74 | 41.67 | 12.47 | 30.23 | 47.68 | 26.72 | 49.22 | 18.7 |
-| FCOS w/ RFLA | 51.41 | 38.20 | 39.45 | 25.87 | 30.93 | 44.31 | 25.32 | 110.62 | 13.9 |
-| QueryDet | 55.16 | 37.07 | 37.75 | 17.89 | 24.90 | 44.05 | 25.52 | 121.67 | 12.8 |
-| TINet | 40.34 | 28.30 | 28.60 | 0.00 | 24.12 | 34.99 | 34.97 | 92.80 | 13.0 |
-| CFT | 37.32 | 22.69 | 22.83 | 16.72 | 18.14 | 27.52 | 8.14 | 112.02 | 10.8 |
-| HRFuser | 33.24 | 22.23 | 22.50 | 0.00 | 26.73 | 26.26 | 23.85 | 54.17 | 4.5 |
-| QFDet | 57.34 | 42.08 | 44.04 | 20.27 | 30.09 | 50.36 | 26.78 | 81.43 | 14.2 |
-| QFDet* | 61.62 | 46.72 | 48.75 | 22.15 | 37.91 | 53.71 | 28.41 | 242.82 | 5.7 |
-| **COXNet (Ours)** | **59.01** | **45.57** | **47.18** | **27.37** | **35.55** | **52.56** | **29.74** | **51.27** | **17.6** |
-| **COXNet* (Ours)** | **62.76** | **50.04** | **51.82** | **23.08** | **40.10** | **56.76** | **30.89** | **123.59** | **12.9** |
+*Raw detail energy fires on objects and clutter alike; LL supplies stable blob
+context; their agreement — the learned map R — matches the supervision target
+on unseen validation images.*
 
-† indicates methods adapted for the RGBT baseline detector. * denotes models utilizing detection heads with P2-P6 feature maps.
+## Results (RGBTDronePerson, seed 0, best epoch)
 
-### VTUAV-det
+| | mAP25 | mAP50 | mAP75 | tiny1 | tiny2 | tiny3 | small |
+|---|---|---|---|---|---|---|---|
+| COXNet (baseline) | 58.90 | 45.98 | 5.88 | 18.01 | 36.73 | 53.25 | 28.28 |
+| **+ TDS** | **59.72** | **46.77** | **6.69** | **24.12** | **37.21** | **53.70** | **30.46** |
 
-[[Dataset Link](https://nnnnerd.github.io/RGBTDronePerson/)]
+**Knockout attribution** — resetting the six scalars to identity at inference
+*on the same trained checkpoint* (deterministic, no training noise):
 
-| Method | mAP | mAP50 | mAP75 | mAPs | mAPm | mAPl | FPS |
-|--------|-----|-------|-------|------|------|------|-----|
-| ATSS | 21.4 | 52.7 | 13.9 | 5.9 | 20.8 | 45.2 | 25.1 |
-| GFL | 29.8 | 67.8 | 22.2 | 10.3 | 27.9 | 55.7 | 23.6 |
-| QueryDet | 29.5 | 68.9 | 20.2 | 7.8 | 29.9 | 53.5 | 14.6 |
-| CFT | 8.7 | 29.3 | 2.4 | 3.9 | 8.5 | 23.4 | 8.3 |
-| HRFuser | 25.9 | 55.9 | 20.1 | 2.7 | 27.9 | 51.9 | 5.6 |
-| TINet | 26.8 | 59.4 | 20.1 | 1.2 | 29.0 | 53.7 | 14.5 |
-| QFDet | 31.1 | 70.4 | 22.9 | 12.5 | 20.4 | 56.8 | 15.3 |
-| QFDet* | 33.3 | 75.5 | 24.2 | 18.1 | 32.4 | 57.2 | 9.4 |
-| **COXNet (Ours)** | **31.5** | **71.8** | **23.1** | **15.3** | **30.6** | **56.0** | **21.2** |
-| **COXNet* (Ours)** | **33.5** | **76.1** | **25.1** | **18.6** | **32.6** | **56.8** | **15.0** |
+| | mAP50 | tiny1 |
+|---|---|---|
+| module on | 46.77 | 24.12 |
+| module erased (`s=1, k=0`) | 45.71 | 11.30 |
 
-### NII-CU
+Erasing the module returns the network to baseline level and halves tiny1: the
+gain rides in the module's forward computation, and the detector routes its
+smallest-object evidence through the re-admitted thermal detail.
 
-[[Dataset Link](https://www.okutama-segmentation.org/)]
+<p align="center"><img src="assets/fig_feature_enhance.png" width="95%"></p>
 
-| Method | mAP | mAP50 | mAP75 | FPS |
-|--------|-----|-------|-------|-----|
-| ATSS | 54.6 | 95.5 | 55.0 | 24.1 |
-| GFL | 61.0 | 96.7 | 71.2 | 19.6 |
-| CFT | 51.2 | 95.1 | 58.7 | 9.2 |
-| QFDet | 58.3 | 96.7 | 65.3 | 17.3 |
-| QFDet* | 63.7 | 97.6 | 76.4 | 10.3 |
-| **COXNet (Ours)** | **61.4** | **98.2** | **70.5** | **17.9** |
-| **COXNet* (Ours)** | **65.4** | **97.9** | **79.6** | **13.1** |
+*The change TDS makes to the thermal feature lands on the objects (box AUC of
+the energy difference: 0.981; object/background energy ratio 1.70 → 1.90).*
 
----
+## Usage
 
-## Installation
-
-**Requirements:** CUDA 11.3 · Python 3.9.18
-
-**Step 1 — Clone the repository**
+Environment and data follow [the original COXNet instructions](README_COXNet.md).
 
 ```bash
-git clone https://github.com/your-username/COXNet-release.git
-cd COXNet-release
+# pre-flight (identity at init, RGB-path independence, gradient reachability)
+python tools/misc/test_tds.py
+
+# train
+python tools/train.py --config configs/coxnet/coxnet_tds_r50_fpn_1x_rgbtdroneperson.py --seed 0
+
+# evaluate
+python tools/test.py --config configs/coxnet/coxnet_tds_r50_fpn_1x_rgbtdroneperson.py \
+  --checkpoint work_dir/coxmamba/rgbtdroneperson/coxnet_tds/epoch_10.pth --eval bbox
 ```
 
-**Step 2 — Install PyTorch**
+Ablations need no extra configs:
 
 ```bash
-pip install torch==1.10.0+cu113 torchvision==0.11.1+cu113 \
-    -f https://download.pytorch.org/whl/torch_stable.html
+# remove the map supervision (R dies uniform → g = s, uniform re-admission only)
+--cfg-options model.tdr_loss_weight=0.0
+# tighter heatmap target
+--cfg-options model.tdr_hm_min_sigma=0.5
+# all pyramid levels (levels 1-3 receive ~1e-4 of level 0's gradient)
+--cfg-options model.tdr_levels="(0,1,2,3)"
 ```
 
-**Step 3 — Install mmcv-full**
+The module lives in
+[`mmdet/models/utils/maclfm.py`](mmdet/models/utils/maclfm.py) (evidence for
+each design decision is documented there), the fusion wiring in
+[`mmdet/models/utils/wavelet_process.py`](mmdet/models/utils/wavelet_process.py)
+(`up_tdr`), and the heatmap supervision in
+[`mmdet/models/utils/fusion_strategy.py`](mmdet/models/utils/fusion_strategy.py).
 
-```bash
-pip install mmcv-full==1.7.0 \
-    -f https://download.openmmlab.com/mmcv/dist/cu113/torch1.10/index.html
-```
+## Acknowledgements
 
-**Step 4 — Install remaining dependencies**
-
-```bash
-pip install -r requirements.txt
-pip install setuptools==59.5.0 --force-reinstall
-python setup.py develop
-```
-
----
-
-## Dataset Preparation
-
-COXNet is evaluated on three RGBT benchmarks:
-
-| Dataset | Description | Link |
-|---------|-------------|------|
-| **RGBTDronePerson** | Drone-based RGB-thermal person detection | [Project page](https://nnnnerd.github.io/RGBTDronePerson/) |
-| **VTUAV-det** | Aerial vehicle and UAV detection | [Project page](https://nnnnerd.github.io/RGBTDronePerson/) |
-| **NII-CU** | 6,000 RGBT image pairs with 19,000 annotated instances (pedestrian, vehicle, cyclist) | [Dataset](https://www.okutama-segmentation.org/) |
-
-Organize datasets under `data/` as follows:
-
-```
-data/
-├── RGBTDronePerson/
-│   ├── train/
-│   │   ├── visible/
-│   │   └── infrared/
-│   └── val/
-│       ├── visible/
-│       └── infrared/
-└── VTUAV/
-    ├── train/
-    └── val/
-```
-
-Update the `data_root` paths in the corresponding config files under `configs/_base_/datasets/` before training.
-
----
-
-## Training
-
-**Single GPU**
-
-```bash
-python tools/train.py configs/coxnet/coxnet_r50_fpn_1x_rgbtdroneperson.py
-```
-
-**Multi-GPU (e.g., 4 GPUs)**
-
-```bash
-bash tools/dist_train.sh configs/coxnet/coxnet_r50_fpn_1x_rgbtdroneperson.py 4
-```
-
-Available configs:
-
-```
-configs/coxnet/
-├── coxnet_r50_fpn_1x_rgbtdroneperson.py
-├── coxnet_star_r50_fpn_1x_rgbtdroneperson.py
-├── coxnet_r50_fpn_1x_vtuav.py
-└── coxnet_star_r50_fpn_1x_vtuav.py
-```
-
----
-
-## Evaluation
-
-```bash
-python tools/test.py \
-    configs/coxnet/coxnet_r50_fpn_1x_rgbtdroneperson.py \
-    /path/to/checkpoint.pth \
-    --eval bbox
-```
-
----
-
-## Citation
-
-If you find this work useful, please cite:
+Built on [COXNet](https://github.com/Troy-peng-0327/COXNet-release)
+(Peng et al., *IEEE TCSVT* 2026) and [MMDetection 2.x](https://github.com/open-mmlab/mmdetection)
+(Apache-2.0 — see [LICENSE](LICENSE)). Please cite the original COXNet paper
+when using this code:
 
 ```bibtex
-@article{peng2025coxnet,
-  title={COXNet: Cross-layer fusion with adaptive alignment and scale integration for RGBT tiny object detection},
-  author={Peng, Peiran and Xu, Tingfa and Zhu, Mengqi Zhu and Fang, Yuqiang and Li, Jianan},
+@article{peng2026coxnet,
+  title={COXNet: Cross-Layer Fusion With Adaptive Alignment and Scale Integration for RGBT Tiny Object Detection},
+  author={Peng, Peiran and Xu, Tingfa and Song, Liqiang and Zhu, Mengqi and Fang, Yuqiang and Li, Jianan},
   journal={IEEE Transactions on Circuits and Systems for Video Technology},
-  year={2025},
-  publisher={IEEE}
+  year={2026},
+  doi={10.1109/TCSVT.2025.3595147}
 }
 ```
-
----
-
-## Acknowledgement
-
-This work was supported by the Natural Science Foundation of Chongqing, China, under Grant cstc2021jcyj-msxmX1130.
-
-This codebase is built upon [MMDetection](https://github.com/open-mmlab/mmdetection). We thank the OpenMMLab team for their excellent open-source framework.
