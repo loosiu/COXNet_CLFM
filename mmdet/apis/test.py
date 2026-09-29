@@ -22,7 +22,6 @@ def single_gpu_test(model,
                     show=False,
                     out_dir=None,
                     show_score_thr=0.3):
-    gt_json_path = '/mnt/nfs_200T/optics/data/dataset_ppr/Public/RGBTDronePerson-yolo/val_thermal.json'
     model.eval()
     results = []
     dataset = data_loader.dataset
@@ -30,8 +29,6 @@ def single_gpu_test(model,
     prog_bar = mmcv.ProgressBar(len(dataset))
 
     for i, data in enumerate(data_loader):
-        gt_bboxes, gt_labels = load_ground_truth(gt_json_path, i)
-
         with torch.no_grad():
             result = model(return_loss=False, rescale=True, **data)
 

@@ -33,6 +33,7 @@ for seed in "${seeds[@]}"; do
         --gpu-id 0
         --seed "${seed}"
         --deterministic
+        --auto-resume
     )
 
     printf 'RUN seed=%s work_dir=%s command=' "${seed}" "${relative_work_dir}"

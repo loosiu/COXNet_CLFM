@@ -57,6 +57,7 @@ print(os.environ['CUDA_VISIBLE_DEVICES'])
                 f'work_dir/coxmamba/rgbtdroneperson/dwt_dfca/seed{seed}',
                 line)
             self.assertIn('--deterministic', line)
+            self.assertIn('--auto-resume', line)
 
 
 if __name__ == '__main__':
