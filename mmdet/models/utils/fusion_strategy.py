@@ -4,6 +4,7 @@ import torch.nn.functional as F
 import einops
 from mmcv.runner import BaseModule
 from .wavelet_process import DWTC
+from .dwt_dfca import DWTDFCA
 
 
 class FusionLayer(nn.Module):
@@ -40,6 +41,11 @@ class FusionLayer(nn.Module):
         self.wf_loss_weight = wf_loss_weight
         self.use_clfm = use_clfm
         self.usepoolup = usepoolup
+
+        if 'dwt_dfca' in self.use_clfm:
+            self.dwt_dfca_layers = nn.ModuleList([
+                DWTDFCA(channels=in_channels) for _ in range(num_layers)
+            ])
 
         if 'v2' in self.use_clfm:
             self.idwt_layers = nn.ModuleList()
@@ -105,7 +111,9 @@ class FusionLayer(nn.Module):
             
             elif self.fs_type == 'fusionnet-xo':
                 if len(self.use_clfm) != 0:
-                    if 'v' == self.use_clfm[0]:
+                    if 'dwt_dfca' in self.use_clfm:
+                        v_feat = self.dwt_dfca_layers[i](t_feat, v_feat)
+                    elif 'v' == self.use_clfm[0]:
                         v_feat = F.interpolate(v_feat, size=t_feat.shape[2:], mode='bilinear', align_corners=True)
                     elif 'v2' in self.use_clfm or 'v3' in self.use_clfm:
                         v_feat = self.idwt_layers[i](t_feat, v_feat)
@@ -134,6 +142,21 @@ class FusionLayer(nn.Module):
                         wf_loss += self.compute_kl_loss_near_objects(fused_feats[i], v_feats[i], gt_bboxes, img_metas, weight=self.wf_loss_weight)
                     return fused_feats, wf_loss
         return fused_feats
+
+    def get_dwt_dfca_diagnostics(self):
+        if not hasattr(self, 'dwt_dfca_layers'):
+            return {}
+        level_diagnostics = [
+            layer.get_diagnostics() for layer in self.dwt_dfca_layers
+        ]
+        if not level_diagnostics or any(not values
+                                        for values in level_diagnostics):
+            return {}
+        return {
+            key: torch.stack([values[key]
+                              for values in level_diagnostics]).mean()
+            for key in level_diagnostics[0]
+        }
 
     def compute_kl_loss_near_objects(self, fused_x, x, bboxes, img_metas, weight=1.0):
         kl_loss = 0
