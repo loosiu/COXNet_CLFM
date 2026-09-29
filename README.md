@@ -151,6 +151,36 @@ python tools/train.py configs/coxnet/coxnet_r50_fpn_1x_rgbtdroneperson.py
 bash tools/dist_train.sh configs/coxnet/coxnet_r50_fpn_1x_rgbtdroneperson.py 4
 ```
 
+### One-way DWT-DFCA experiment
+
+`configs/coxnet/dwt_dfca/DWT_DFCA.py` replaces only CLFM with a
+one-way DWT-domain frequency-decoupled cross-modal attention module. It
+keeps the official cross-stage FPN pairing, learned RGB DeConv, unchanged
+Thermal stream, HOFM/AAM, `wf_loss`, detector head, and training settings.
+
+During training, the following non-loss diagnostics are logged:
+`dfca_w_low`, `dfca_w_mid`, `dfca_w_high`, `dfca_gate_mean`, and
+`dfca_delta_ratio`.
+
+Run deterministic seeds 0, 1, and 2 sequentially on physical GPU 1:
+
+```bash
+bash tools/run_dwt_dfca_seeds_gpu1.sh
+```
+
+Inspect the commands without starting jobs:
+
+```bash
+DWT_DFCA_DRY_RUN=1 bash tools/run_dwt_dfca_seeds_gpu1.sh
+```
+
+The focused CPU checks use the project training environment:
+
+```bash
+/home/viplab/anaconda3/envs/coxmamba/bin/python \
+  tests/test_models/test_utils/test_dwt_dfca.py -v
+```
+
 Available configs:
 
 ```
