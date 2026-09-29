@@ -107,6 +107,10 @@ class FusionNetXO(SingleStageDetector):
         if self.wf_loss:
             losses.update(dict(wf_loss=wf_loss))
 
+        diagnostics = self.fuse_layer.get_dwt_dfca_diagnostics()
+        losses.update({f'dfca_{name}': value
+                       for name, value in diagnostics.items()})
+
         return losses
 
     # def show_result(self,
