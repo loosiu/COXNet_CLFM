@@ -95,6 +95,8 @@ class DWTDFCA(nn.Module):
 
 `visible` is the lower-resolution cross-stage feature. The module owns the baseline-compatible x2 DeConv and returns enhanced RGB at Thermal resolution. It rejects channel or post-DeConv spatial mismatches instead of silently interpolating them.
 
+The module contains a small device-agnostic orthonormal Haar DWT/IDWT implementation based on 2x2 even/odd samples. It is mathematically equivalent to the baseline's one-level Haar transform but does not reuse the legacy `DWT_2D.forward()`, which unconditionally calls `.cuda()` and therefore cannot preserve the caller's device or support CPU tests. The original CLFM implementation remains unchanged.
+
 ### `FusionLayer` integration
 
 - Preserve the existing `use_clfm=['v3']` path unchanged.
@@ -144,8 +146,9 @@ Focused CPU tests must prove:
 4. Q, K, V, gate, router, output projection, DeConv, and both input tensors receive finite non-zero gradients.
 5. A mismatched post-DeConv shape raises a clear error.
 6. `FusionLayer` uses four DWT-DFCA instances and produces the four expected pyramid shapes.
-7. The new config builds the official detector while retaining FPN start levels, `wf_loss`, HOFM/AAM, GFL, and QLS settings.
-8. The original `v3` baseline configuration remains byte-for-byte unchanged.
+7. The Haar DWT/IDWT round trip reconstructs an even-sized CPU tensor within floating-point tolerance and preserves dtype/device.
+8. The new config builds the official detector while retaining FPN start levels, `wf_loss`, HOFM/AAM, GFL, and QLS settings.
+9. The original `v3` baseline configuration remains byte-for-byte unchanged.
 
 The upstream full pytest collection is not a release gate for this fork because the clean official baseline already fails collection due to absent `pytorch_wavelets` in the test environment and unrelated removed upstream modules/dependencies. Those baseline failures must remain documented. Focused tests run in an environment containing the project dependencies, followed by `compileall`, config/model construction, and a real GPU forward/backward smoke test in `coxmamba`.
 
